@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Câmera de Vigia P2P</title>
+  
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+    body { background-color: #121212; color: #fff; display: flex; flex-direction: column; align-items: center; padding: 15px; }
+    h1 { font-size: 1.3rem; color: #00e676; margin-bottom: 10px; text-align: center; }
+    .card { background: #1e1e1e; border-radius: 12px; padding: 15px; width: 100%; max-width: 480px; margin-bottom: 15px; }
+    .form-group { margin-bottom: 12px; }
+    label { font-size: 0.85rem; color: #aaa; display: block; margin-bottom: 5px; }
+    input, select, button { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #333; background: #2a2a2a; color: #fff; margin-top: 5px; font-size: 0.95rem; }
+    button { background: #00e676; color: #000; font-weight: bold; border: none; cursor: pointer; transition: 0.2s; }
+    button:active { transform: scale(0.98); }
+    button.sec { background: #333; color: #fff; }
+    button.perm-btn { background: #ff9800; color: #000; font-weight: bold; margin-bottom: 10px; }
+    .video-container { width: 100%; aspect-ratio: 9/16; background: #000; border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+    video { width: 100%; height: 100%; object-fit: cover; }
+    .night-mode { filter: brightness(2.2) contrast(1.5) grayscale(1) hue-rotate(90deg); }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+    .hidden { display: none !important; }
+    #logBox { background: #331010; color: #ff8888; padding: 10px; font-size: 0.8rem; border-radius: 8px; margin-bottom: 10px; word-break: break-word; border: 1px solid #ff4444; }
+    .status-badge { font-size: 0.85rem; padding: 6px; background: #2a2a2a; color: #00e676; border-radius: 6px; text-align: center; margin-bottom: 10px; }
+    .perm-status { font-size: 0.8rem; color: #aaa; margin-top: 5px; text-align: center; }
+  </style>
+</head>
+<body>
+
+  <h1>Câmera de Vigia P2P</h1>
+
+  <div id="logBox" class="card hidden"></div>
+
+  <!-- SOLICITAÇÃO DE PERMISSÕES -->
+  <div id="permissionPanel" class="card">
+    <h3 style="margin-bottom: 10px; font-size: 1rem;">1. Permissões do Sistema</h3>
+    <p style="font-size: 0.85rem; color: #ccc; margin-bottom: 12px;">Para o sistema funcionar, o navegador precisa autorizar o acesso à câmera e às notificações.</p>
+    <button type="button" class="perm-btn" onclick="requestAllPermissions()">🔓 Conceder Permissões Agora</button>
+    <div id="permStatus" class="perm-status">Aguardando autorização...</div>
+  </div>
+
+  <!-- PAINEL DE CONFIGURAÇÃO DA SALA -->
+  <div id="setupPanel" class="card hidden">
+    <h3 style="margin-bottom: 10px; font-size: 1rem;">2. Conectar Dispositivos</h3>
+    <div class="form-group">
+      <label>Função deste celular:</label>
+      <select id="roleSelect">
+        <option value="camera">Transmitir Câmera (Ficará filmando)</option>
+        <option value="viewer">Visualizar Monitor (Irá assistir)</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Código da Sala (Use o mesmo nos 2 celulares):</label>
+      <input type="text" id="roomCode" placeholder="Ex: 8899" />
+    </div>
+    <button type="button" class="sec" onclick="generateCode()">Gerar Código Aleatório</button>
+    <button type="button" onclick="startSession()">Entrar na Sala</button>
+  </div>
+
+  <!-- TELA DE VÍDEO -->
+  <div id="videoPanel" class="card hidden">
+    <div id="statusText" class="status-badge">Aguardando conexão...</div>
+    <div class="video-container">
+      <video id="videoElement" autoplay playsinline muted></video>
+    </div>
+
+    <!-- CONTROLES REMOTOS (Para quem assiste) -->
+    <div id="viewerControls" class="grid hidden">
+      <button onclick="toggleCamera()">Trocar Câmera</button>
+      <button onclick="toggleNightMode()">Câmera Noturna</button>
+      <button onclick="toggleFlashlight()">Acender Luz</button>
+      <button onclick="toggleKeepAwake()" class="sec" id="awakeBtn">Manter Tela: OFF</button>
+    </div>
+
+    <!-- CONTROLES LOCAIS (Para quem transmite) -->
+    <div id="cameraControls" class="hidden" style="margin-top: 10px;">
+      <button onclick="toggleKeepAwake()" class="sec" id="cameraAwakeBtn">Manter Tela: OFF</button>
+    </div>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyD3Q2P6lch9XxxYlJoEsdqqwwt3KBJgpFc",
+      authDomain: "projeto-a08cb.firebaseapp.com",
+      databaseURL: "https://projeto-a08cb-default-rtdb.firebaseio.com",
+      projectId: "projeto-a08cb",
+      storageBucket: "projeto-a08cb.firebasestorage.app",
+      messagingSenderId: "996658403778",
+      appId: "1:996658403778:web:665022027f7d0e8b9a5e5b"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    let peer = null, localStream = null, wakeLock = null;
+    let roomCode = "", role = "camera", currentFacing = "environment";
+    let isNight = false, isFlash = false, isAwake = false;
+
+    const videoEl = document.getElementById("videoElement");
+    const statusText = document.getElementById("statusText");
+    const logBox = document.getElementById("logBox");
+
+    function logError(msg) {
+      logBox.classList.remove("hidden");
+      logBox.innerText = "Aviso: " + msg;
+    }
+
+    // Pedir todas as permissões no início
+    window.requestAllPermissions = async () => {
+      const permStatus = document.getElementById("permStatus");
+      try {
+        // Permissão de Notificação
+        if ("Notification" in window && Notification.permission !== "granted") {
+          await Notification.requestPermission();
+        }
+
+        // Permissão de Câmera e Áudio
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        // Para a captura temporária usada no teste
+        stream.getTracks().forEach(t => t.stop());
+
+        permStatus.style.color = "#00e676";
+        permStatus.innerText = "✓ Permissões concedidas com sucesso!";
+        
+        setTimeout(() => {
+          document.getElementById("permissionPanel").classList.add("hidden");
+          document.getElementById("setupPanel").classList.remove("hidden");
+        }, 800);
+
+      } catch (err) {
+        permStatus.style.color = "#ff4444";
+        permStatus.innerText = "❌ Permissão negada ou não suportada: " + err.message;
+        logError("Acesse as configurações do navegador no celular e permita o uso da Câmera.");
+      }
+    };
+
+    window.generateCode = () => {
+      document.getElementById("roomCode").value = Math.floor(1000 + Math.random() * 9000).toString();
+    };
+
+    window.startSession = async () => {
+      roomCode = document.getElementById("roomCode").value.trim();
+      role = document.getElementById("roleSelect").value;
+
+      if (!roomCode) return alert("Digite ou gere um código de sala!");
+
+      document.getElementById("setupPanel").classList.add("hidden");
+      document.getElementById("videoPanel").classList.remove("hidden");
+
+      if (role === "camera") {
+        document.getElementById("cameraControls").classList.remove("hidden");
+        statusText.innerText = "Iniciando câmera local...";
+        await startMediaStream();
+        initPeerCamera();
+      } else {
+        document.getElementById("viewerControls").classList.remove("hidden");
+        statusText.innerText = "Procurando transmissão na sala " + roomCode + "...";
+        initPeerViewer();
+      }
+    };
+
+    async function startMediaStream() {
+      if (localStream) localStream.getTracks().forEach(t => t.stop());
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: currentFacing },
+          audio: false
+        });
+        videoEl.srcObject = localStream;
+      } catch (err) {
+        logError("Falha ao abrir a câmera: " + err.message);
+      }
+    }
+
+    // Configuração com servidores STUN do Google para atravessar 4G e Wi-Fi
+    const peerConfig = {
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' }
+        ]
+      }
+    };
+
+    function initPeerCamera() {
+      peer = new Peer(`cam-${roomCode}`, peerConfig);
+      
+      peer.on("open", () => {
+        statusText.innerText = `Câmera Pronta! Aguardando o celular monitor (Código: ${roomCode})`;
+      });
+
+      peer.on("call", call => {
+        call.answer(localStream);
+        statusText.innerText = " Transmitindo em tempo real!";
+      });
+
+      peer.on("error", err => logError("Erro P2P: " + err.type));
+
+      // Escutar comandos vindos do celular monitor pelo Firebase
+      onValue(ref(db, `rooms/${roomCode}/commands`), snapshot => {
+        const data = snapshot.val();
+        if (!data) return;
+
+        if (data.facingMode && data.facingMode !== currentFacing) {
+          currentFacing = data.facingMode;
+          startMediaStream();
+        }
+        if (data.flashlight !== undefined && data.flashlight !== isFlash) {
+          isFlash = data.flashlight;
+          applyFlash(isFlash);
+        }
+        if (data.nightMode !== undefined) {
+          videoEl.classList.toggle("night-mode", data.nightMode);
+        }
+      });
+    }
+
+    function initPeerViewer() {
+      peer = new Peer(peerConfig);
+
+      peer.on("open", () => {
+        connectToCamera();
+      });
+
+      peer.on("error", err => {
+        logError("Câmera não encontrada. Verifique se o celular da câmera já clicou em 'Entrar na Sala'.");
+      });
+    }
+
+    function connectToCamera() {
+      const call = peer.call(`cam-${roomCode}`, null);
+      if (!call) return logError("Não foi possível conectar.");
+
+      call.on("stream", remoteStream => {
+        videoEl.srcObject = remoteStream;
+        statusText.innerText = "✓ Conectado! Exibindo imagem ao vivo.";
+      });
+    }
+
+    async function applyFlash(enable) {
+      if (!localStream) return;
+      const track = localStream.getVideoTracks()[0];
+      try {
+        const caps = track.getCapabilities();
+        if (caps.torch) await track.applyConstraints({ advanced: [{ torch: enable }] });
+      } catch (e) {
+        logError("Lanterna/Flash não suportado neste navegador.");
+      }
+    }
+
+    window.toggleCamera = () => {
+      currentFacing = currentFacing === "environment" ? "user" : "environment";
+      sendCommand({ facingMode: currentFacing });
+    };
+
+    window.toggleNightMode = () => {
+      isNight = !isNight;
+      videoEl.classList.toggle("night-mode", isNight);
+      sendCommand({ nightMode: isNight });
+    };
+
+    window.toggleFlashlight = () => {
+      isFlash = !isFlash;
+      sendCommand({ flashlight: isFlash });
+    };
+
+    function sendCommand(data) {
+      set(ref(db, `rooms/${roomCode}/commands`), data);
+    }
+
+    window.toggleKeepAwake = async () => {
+      if (!isAwake) {
+        try {
+          wakeLock = await navigator.wakeLock.request('screen');
+          isAwake = true;
+          document.getElementById("awakeBtn").innerText = "Manter Tela: ON";
+          document.getElementById("cameraAwakeBtn").innerText = "Manter Tela: ON";
+        } catch (err) {
+          logError("Recurso de manter a tela ligada não suportado neste navegador.");
+        }
+      } else {
+        if (wakeLock) await wakeLock.release();
+        isAwake = false;
+        document.getElementById("awakeBtn").innerText = "Manter Tela: OFF";
+        document.getElementById("cameraAwakeBtn").innerText = "Manter Tela: OFF";
+      }
+    };
+  </script>
+</body>
+</html>
